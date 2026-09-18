@@ -94,6 +94,10 @@ def unit_cases():
          [(0, 12, 'length_delimited', '(Message)'),
           (1, 1, 'length_delimited', 'name'),
           (1, 4, 'length_delimited', 'http')]),
+        ("单 len-delim 子行内嵌消息 (Poster 只含 f4{url})",
+         b'\x0a\x06' + b'\x22\x04http',
+         [(0, 1, 'length_delimited', '(Message)'),
+          (1, 4, 'length_delimited', 'http')]),
     ]
 
 

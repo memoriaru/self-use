@@ -161,7 +161,11 @@ def _parse_py(buf, base, depth, out, max_depth, err):
                     ok = _parse_py(sub, vstart, depth + 1, out, max_depth, err)
                     n_children = len(out) - mark_children      # 子行数 (含孙行)
                     has_ctrl = _has_control(sub)
-                    if not (ok and (has_ctrl or n_children >= 2)):
+                    # 单 len-delim 子行且内容为文本 = 内嵌消息特征 (Poster 只含 f4{url})
+                    any_len_text = any(r[2] == 'length_delimited'
+                                       and isinstance(r[3], (str, dict))
+                                       for r in out[mark_children:])
+                    if not (ok and (has_ctrl or n_children >= 2 or any_len_text)):
                         del out[mark_children - 1:]
                         err[0] = saved          # 镜像 C: 恢复调用方错误状态
                         ok_u, ratio = _utf8_ratio(sub)

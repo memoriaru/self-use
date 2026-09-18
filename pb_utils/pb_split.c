@@ -211,7 +211,12 @@ static int parse_level(Ctx *c, const unsigned char *buf, size_t len, int depth, 
                 int sub_ok = (try_parse_children(c, sub, sublen, depth + 1, base + pos) == 0);
                 size_t nf = c->count - saved_count;          /* 子行数 (含孙行) */
                 int has_ctrl = has_control_byte(sub, sublen);
-                if (!(sub_ok && (has_ctrl || nf >= 2))) {
+                /* 单 len-delim 子行且内容为文本 = 内嵌消息特征 (如 Poster 只含 f4{url}) */
+                int any_len_text = 0;
+                for (size_t k = saved_count; k < c->count; k++)
+                    if (c->rows[k].wire_type == WT_LEN &&
+                        (c->rows[k].flags & (PF_STRING | PF_MESSAGE))) { any_len_text = 1; break; }
+                if (!(sub_ok && (has_ctrl || nf >= 2 || any_len_text))) {
                     c->count = saved_count;   /* 回滚子行 */
                     c->rows[parent_idx].flags =
                         (utf8ok && ratio >= 0.68) ? PF_STRING : PF_BYTES;
