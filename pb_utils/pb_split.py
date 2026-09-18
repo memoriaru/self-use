@@ -39,7 +39,7 @@ import ctypes
 import os
 import sys
 
-__all__ = ['split_fields', 'rows_to_tree', 'rows_to_dict', 'WireError']
+__all__ = ['split_fields', 'rows_to_tree', 'rows_to_dict', 'interpret_fixed', 'WireError']
 
 WT_NAMES = {0: 'varint', 1: 'fixed64', 2: 'length_delimited', 5: 'fixed32'}
 PF_VARINT, PF_STRING, PF_MESSAGE, PF_BYTES, PF_FIXED = 0x01, 0x02, 0x04, 0x08, 0x10
@@ -319,13 +319,43 @@ def split_fields(data, max_depth=64, engine='auto'):
 
 
 
-def rows_to_dict(rows):
+
+def interpret_fixed(raw):
+    """
+    fixed32/fixed64 原始字节的多解释 (盲解析的极限辅助).
+
+    fixed32 → {'u32', 'i32', 'f32', 'hex'}
+    fixed64 → {'u64', 'i64', 'f64', 'hex'}
+
+    例: b'\x00\x00\x10\x3f' → {'f32': 0.5625, ...}  (stream_ratio 9:16)
+    wire format 不携带类型信息, float/int 无法唯一确定 — 并列展示供人工判断.
+    """
+    import struct as _s
+    if len(raw) == 4:
+        return {'u32': int.from_bytes(raw, 'little'),
+                'i32': int.from_bytes(raw, 'little', signed=True),
+                'f32': _s.unpack('<f', raw)[0],
+                'hex': raw.hex()}
+    if len(raw) == 8:
+        return {'u64': int.from_bytes(raw, 'little'),
+                'i64': int.from_bytes(raw, 'little', signed=True),
+                'f64': _s.unpack('<d', raw)[0],
+                'hex': raw.hex()}
+    return {'hex': raw.hex()}
+
+
+_interpret_fixed_fn = interpret_fixed
+
+
+def rows_to_dict(rows, interpret_fixed=False):
     """
     把 split_fields 的前序行拼回 message 风格的嵌套 dict.
 
     - 键为字符串字段号 (JSON 友好)
     - 重复字段 → list
     - '(Message)' 行 → 嵌套 dict (子行填充)
+    - interpret_fixed=True: fixed32/64 字段输出多解释 dict
+      {'u32','i32','f32'/'f64','hex'} 而非原始字节
 
     例: b'\x08\x05\x12\x02hi' → {'1': 5, '2': 'hi'}
         嵌套 f1{f1=5,f4='url'} → {'1': {'1': 5, '4': 'url'}}
@@ -333,6 +363,10 @@ def rows_to_dict(rows):
     root = {}
     stack = [(-1, root)]
     for depth, fn, wt, value, start, end in rows:
+        if interpret_fixed and wt in ('fixed32', 'fixed64') and isinstance(value, (bytes, bytearray)):
+            value = _interpret_fixed_fn(bytes(value))
+        elif interpret_fixed and wt in ('fixed32', 'fixed64'):
+            value = _interpret_fixed_fn(value)
         while stack and stack[-1][0] >= depth:
             stack.pop()
         parent = stack[-1][1]
