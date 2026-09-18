@@ -89,6 +89,11 @@ def unit_cases():
          [(0, 1, 'length_delimited', '(Message)'),
           (1, 2, 'length_delimited', '(Message)'),
           (2, 1, 'varint', 5)]),
+        ("Poster 型 (f1{标题}+f4{url}, 全可打印)",
+         b'\x62\x0c' + b'\x0a\x04name\x22\x04http',
+         [(0, 12, 'length_delimited', '(Message)'),
+          (1, 1, 'length_delimited', 'name'),
+          (1, 4, 'length_delimited', 'http')]),
     ]
 
 
@@ -131,6 +136,14 @@ check("空输入", all(split_fields(b'', engine=e) == [] for e in ENGINES))
 rows = split_fields(b'\x0a\x04\x12\x02\x08\x05', engine=ENGINES[0])
 tree = rows_to_tree(rows)
 check("树重建正确", tree[0]['children'][0]['children'][0]['value'] == 5)
+
+# rows_to_dict
+rd = pb_split.rows_to_dict(split_fields(b'\x08\x05\x12\x02hi\x62\x0c\x0a\x04name\x22\x04http', engine=ENGINES[0]))
+check("rows_to_dict 嵌套", rd == {'1': 5, '2': 'hi', '12': {'1': 'name', '4': 'http'}}, f"{rd}")
+rd2 = pb_split.rows_to_dict(split_fields(b'\x08\x01\x08\x02', engine=ENGINES[0]))
+check("rows_to_dict 重复字段 → list", rd2 == {'1': [1, 2]}, f"{rd2}")
+rd3 = pb_split.rows_to_dict(split_fields(b'\x62\x0c' + b'\x0a\x04name\x22\x04http', engine=ENGINES[0]))
+check("rows_to_dict Poster 型", rd3 == {'12': {'1': 'name', '4': 'http'}}, f"{rd3}")
 
 
 # ============================================================

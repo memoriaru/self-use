@@ -39,7 +39,7 @@ import ctypes
 import os
 import sys
 
-__all__ = ['split_fields', 'rows_to_tree', 'WireError']
+__all__ = ['split_fields', 'rows_to_tree', 'rows_to_dict', 'WireError']
 
 WT_NAMES = {0: 'varint', 1: 'fixed64', 2: 'length_delimited', 5: 'fixed32'}
 PF_VARINT, PF_STRING, PF_MESSAGE, PF_BYTES, PF_FIXED = 0x01, 0x02, 0x04, 0x08, 0x10
@@ -147,17 +147,28 @@ def _parse_py(buf, base, depth, out, max_depth, err):
                 sub = bytes(buf[pos:pos + l])
                 pos += l
 
-                if sub and _has_control(sub) and depth < max_depth:
-                    # 乐观先发父行(Message), 递归子行; 失败回滚改判
+                # 消歧规则 (对齐 pb_split.c):
+                #   乐观先发父行(MESSAGE) + 递归子行, 然后判定:
+                #   - 子行 >=2 (含孙行) 或 值含控制字节 → Message
+                #     (Poster 型 f1{标题}+f4{url}: tag/长度字节恰好全可打印,
+                #      无控制字节, 但 >=2 个字符串字段足以认定结构)
+                #   - 解析成功但仅 1 行 且 无控制字节 → 纯文本碰巧可解析 → String
+                #   - 解析失败 → utf8 合法且可读率 >=0.68 → String, 否则 Bytes
+                #   空值 → Bytes
+                if sub and depth < max_depth:
                     out.append((depth, fn, 'length_delimited', '(Message)', start, vend))
                     mark_children = len(out)
-                    if not _parse_py(sub, vstart, depth + 1, out, max_depth, err):
+                    ok = _parse_py(sub, vstart, depth + 1, out, max_depth, err)
+                    n_children = len(out) - mark_children      # 子行数 (含孙行)
+                    has_ctrl = _has_control(sub)
+                    if not (ok and (has_ctrl or n_children >= 2)):
                         del out[mark_children - 1:]
-                        err[0] = saved          # 镜像 C: 子层失败恢复调用方错误状态
-                        ok, ratio = _utf8_ratio(sub)
-                        val = sub.decode('utf-8') if (ok and ratio >= 0.68) else sub
+                        err[0] = saved          # 镜像 C: 恢复调用方错误状态
+                        ok_u, ratio = _utf8_ratio(sub)
+                        val = sub.decode('utf-8') if (ok_u and ratio >= 0.68) else sub
                         out.append((depth, fn, 'length_delimited', val, start, vend))
                 else:
+                    # 空值 / 深度超限 → 直接叶子
                     ok, ratio = _utf8_ratio(sub)
                     val = sub.decode('utf-8') if (ok and ratio >= 0.68 and sub) else sub
                     out.append((depth, fn, 'length_delimited', val, start, vend))
@@ -305,6 +316,46 @@ def split_fields(data, max_depth=64, engine='auto'):
             if engine == 'c':
                 raise
     return _split_py(data, max_depth)
+
+
+
+def rows_to_dict(rows):
+    """
+    把 split_fields 的前序行拼回 message 风格的嵌套 dict.
+
+    - 键为字符串字段号 (JSON 友好)
+    - 重复字段 → list
+    - '(Message)' 行 → 嵌套 dict (子行填充)
+
+    例: b'\x08\x05\x12\x02hi' → {'1': 5, '2': 'hi'}
+        嵌套 f1{f1=5,f4='url'} → {'1': {'1': 5, '4': 'url'}}
+    """
+    root = {}
+    stack = [(-1, root)]
+    for depth, fn, wt, value, start, end in rows:
+        while stack and stack[-1][0] >= depth:
+            stack.pop()
+        parent = stack[-1][1]
+        key = str(fn)
+        if value == '(Message)':
+            child = {}
+            if key in parent:
+                if isinstance(parent[key], list):
+                    parent[key].append(child)
+                else:
+                    parent[key] = [parent[key], child]
+            else:
+                parent[key] = child
+            stack.append((depth, child))
+        else:
+            if key in parent:
+                if isinstance(parent[key], list):
+                    parent[key].append(value)
+                else:
+                    parent[key] = [parent[key], value]
+            else:
+                parent[key] = value
+    return root
 
 
 def rows_to_tree(rows):

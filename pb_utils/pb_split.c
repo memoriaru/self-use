@@ -195,21 +195,29 @@ static int parse_level(Ctx *c, const unsigned char *buf, size_t len, int depth, 
             double ratio = 0.0;
             int utf8ok = utf8_check(sub, sublen, &ratio);
 
-            if (sublen > 0 && has_control_byte(sub, sublen)) {
-                /* 二进制特征 → 乐观先发父行(MESSAGE), 再递归子行; 失败回滚改判 */
+            /* 消歧规则 (对齐 pb_split.py):
+             *   乐观先发父行(MESSAGE) + 递归子行, 然后判定:
+             *   - 子行存在(>=2 行, 含孙行) 或 值含控制字节 → Message
+             *     (Poster 型 f1{标题}+f4{url}: tag/长度字节恰好全可打印,
+     *      无控制字节, 但 >=2 个字符串字段足以认定结构)
+             *   - 解析成功但仅 1 行 且 无控制字节 → 纯文本碰巧可解析 → String
+             *   - 解析失败 → utf8 合法且可读率>=0.68 → String, 否则 Bytes
+             *   空值 → Bytes */
+            if (sublen > 0 && depth < c->max_depth) {
                 if (rows_reserve(c, c->count + 1)) return -1;
                 size_t parent_idx = c->count;
                 if (emit(c, fn, wt, depth, start, base + pos + l, base + pos, 0, PF_MESSAGE)) return -1;
                 size_t saved_count = c->count;
-                int sub_ok = (depth < c->max_depth) &&
-                             (try_parse_children(c, sub, sublen, depth + 1, base + pos) == 0);
-                if (!sub_ok) {
+                int sub_ok = (try_parse_children(c, sub, sublen, depth + 1, base + pos) == 0);
+                size_t nf = c->count - saved_count;          /* 子行数 (含孙行) */
+                int has_ctrl = has_control_byte(sub, sublen);
+                if (!(sub_ok && (has_ctrl || nf >= 2))) {
                     c->count = saved_count;   /* 回滚子行 */
                     c->rows[parent_idx].flags =
                         (utf8ok && ratio >= 0.68) ? PF_STRING : PF_BYTES;
                 }
             } else {
-                /* 纯文本特征 → 直接字符串 (也覆盖空串) */
+                /* 空值 / 深度超限 → 直接叶子 */
                 uint8_t flags = (utf8ok && ratio >= 0.68 && sublen > 0) ? PF_STRING : PF_BYTES;
                 if (emit(c, fn, wt, depth, start, base + pos + l, base + pos, 0, flags)) return -1;
             }
